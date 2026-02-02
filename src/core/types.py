@@ -23,6 +23,8 @@ class JobStatus(Enum):
     PAUSED = "Paused"
     COMPLETED = "Completed"
     FAILED = "Failed"
+    MERGE_ERROR = "Merge Error"
+    CANCELLED = "Cancelled"
 
 @dataclass
 class Job:

@@ -15,16 +15,21 @@ class DownloaderSignals(QObject):
     job_progress_updated = pyqtSignal(str, float, str, str)
     job_completed = pyqtSignal(str)
     job_failed = pyqtSignal(str, str)
+    job_cancelled = pyqtSignal(str)
+    # Signals: First URL status (int), Last URL status (int), First error (str), Last error (str)
+    connectivity_tested = pyqtSignal(int, int, str, str)
 
 class Downloader:
     def __init__(self, segment_manager: SegmentManager):
         self.segment_manager = segment_manager
         self.signals = DownloaderSignals()
         self.active_jobs = {}
+        self.cancellation_tokens = {}  # job_name -> bool (True = cancel requested)
         self.session = None
 
     async def start_job(self, job: Job):
         self.active_jobs[job.name] = job
+        self.cancellation_tokens[job.name] = False  # Initialize cancellation token
         job.status = "Running"
         
         # Initialize Cache
@@ -47,6 +52,10 @@ class Downloader:
         
         try:
             await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            # Job was cancelled
+            job.status = "Cancelled"
+            self.signals.job_cancelled.emit(job.name)
         except Exception as e:
             print(f"Job failed: {e}")
             job.status = "Failed"
@@ -55,17 +64,26 @@ class Downloader:
              # Wait for progress monitor to finish one last update
             progress_task.cancel()
             
-            # Check completion
-            if all(s.status == SegmentStatus.COMPLETED for s in job.segments):
-                job.status = "Completed"
-                self.signals.job_completed.emit(job.name)
-            else:
-                 # Check for failures
-                 failed_count = sum(1 for s in job.segments if s.status == SegmentStatus.FAILED)
-                 if failed_count > 0:
-                      self.signals.job_failed.emit(job.name, f"{failed_count} segments failed.")
+            # Clean up cancellation token
+            if job.name in self.cancellation_tokens:
+                del self.cancellation_tokens[job.name]
+            
+            # Check completion (only if not cancelled)
+            if job.status == "Running":
+                if all(s.status == SegmentStatus.COMPLETED for s in job.segments):
+                    job.status = "Completed"
+                    self.signals.job_completed.emit(job.name)
+                else:
+                     # Check for failures
+                     failed_count = sum(1 for s in job.segments if s.status == SegmentStatus.FAILED)
+                     if failed_count > 0:
+                          self.signals.job_failed.emit(job.name, f"{failed_count} segments failed.")
 
     async def download_segment(self, job: Job, segment: Segment):
+        # Check if job is cancelled before starting
+        if self.cancellation_tokens.get(job.name, False):
+            return
+            
         target_path = self.segment_manager.get_segment_path(job, segment)
         
         if self.segment_manager.check_segment_exists(job, segment):
@@ -74,6 +92,10 @@ class Downloader:
             return
 
         async with self.semaphore:
+            # Check again after acquiring semaphore
+            if self.cancellation_tokens.get(job.name, False):
+                return
+                
             segment.status = SegmentStatus.DOWNLOADING
             # Immediate status update for downloading start
             self.signals.segment_status_changed.emit(job.name, segment.index, "Downloading")
@@ -131,6 +153,72 @@ class Downloader:
                 last_emit = now
             
             await asyncio.sleep(0.05) # Check/Sleep 50ms
+
+    def cancel_job(self, job_name: str):
+        """
+        Requests cancellation of a job. The download_segment coroutines will
+        check this flag and exit early. Does NOT clean up files immediately
+        since downloads may still be in progress - use clear_cache separately.
+        """
+        if job_name in self.cancellation_tokens:
+            self.cancellation_tokens[job_name] = True
+            
+        # Update job status
+        if job_name in self.active_jobs:
+            job = self.active_jobs[job_name]
+            job.status = "Cancelled"
+            self.signals.job_cancelled.emit(job_name)
+            # Note: File cleanup is deferred - user can use "Clear Cache" button
+            # after cancellation completes to remove partial files
+
+    async def test_connectivity(self, first_url: str, last_url: str):
+        """
+        Tests connectivity to both the first and last segment URLs.
+        Performs HEAD requests (falls back to GET) and reports status codes.
+        Emits connectivity_tested signal with results.
+        """
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+        
+        async def check_url(url: str) -> tuple[int, str]:
+            """Returns (status_code, error_message)"""
+            try:
+                # Try HEAD first, some servers don't support it
+                async with self.session.head(url, timeout=10, allow_redirects=True) as response:
+                    status = response.status
+                    if status == 404:
+                        return status, "Not Found (404)"
+                    elif status == 403:
+                        return status, "Forbidden (403)"
+                    elif status >= 400:
+                        return status, f"HTTP Error ({status})"
+                    return status, ""
+            except aiohttp.ClientResponseError as e:
+                return e.status, f"HTTP Error ({e.status})"
+            except aiohttp.ClientError as e:
+                # Try GET as fallback
+                try:
+                    async with self.session.get(url, timeout=10, allow_redirects=True) as response:
+                        status = response.status
+                        if status == 404:
+                            return status, "Not Found (404)"
+                        elif status == 403:
+                            return status, "Forbidden (403)"
+                        elif status >= 400:
+                            return status, f"HTTP Error ({status})"
+                        return status, ""
+                except aiohttp.ClientError as get_e:
+                    return 0, f"Connection Error: {str(get_e)[:50]}"
+            except asyncio.TimeoutError:
+                return 0, "Timeout"
+            except Exception as e:
+                return 0, f"Error: {str(e)[:50]}"
+        
+        first_status, first_error = await check_url(first_url)
+        last_status, last_error = await check_url(last_url)
+        
+        self.signals.connectivity_tested.emit(first_status, last_status, first_error, last_error)
+        return first_status, last_status, first_error, last_error
 
     async def close(self):
         if self.session:

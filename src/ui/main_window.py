@@ -2,7 +2,7 @@ import asyncio
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QLineEdit, QPushButton, QGroupBox, QScrollArea,
-    QMessageBox, QTextEdit
+    QMessageBox, QTextEdit, QFrame
 )
 from PyQt6.QtCore import pyqtSlot
 from qasync import asyncSlot
@@ -10,7 +10,7 @@ from qasync import asyncSlot
 from src.core.downloader import Downloader
 from src.core.segment_manager import SegmentManager
 from src.core.merger import Merger
-from src.core.types import Job, Segment, SegmentStatus
+from src.core.types import Job, Segment, SegmentStatus, JobStatus
 from src.config import ConfigManager
 from src.ui.widgets import SegmentMap, JobProgressBar
 from src.ui.settings_dialog import SettingsDialog
@@ -35,6 +35,8 @@ class MainWindow(QMainWindow):
         self.downloader.signals.segment_status_changed.connect(self.on_segment_status)
         self.downloader.signals.job_completed.connect(self.on_job_completed)
         self.downloader.signals.job_failed.connect(self.on_job_failed)
+        self.downloader.signals.job_cancelled.connect(self.on_job_cancelled)
+        self.downloader.signals.connectivity_tested.connect(self.on_connectivity_tested)
 
         self.setup_ui()
 
@@ -42,6 +44,21 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+
+        # === Top Bar (Settings & Clear History) ===
+        top_bar = QHBoxLayout()
+        top_bar.addStretch()
+        
+        self.clear_history_btn = QPushButton("Clear History")
+        self.clear_history_btn.clicked.connect(self.clear_history)
+        self.clear_history_btn.setToolTip("Remove completed jobs from the list (does not delete files)")
+        
+        self.settings_btn = QPushButton("⚙ Settings")
+        self.settings_btn.clicked.connect(self.open_settings)
+        
+        top_bar.addWidget(self.clear_history_btn)
+        top_bar.addWidget(self.settings_btn)
+        main_layout.addLayout(top_bar)
 
         # === Input Area ===
         input_group = QGroupBox("New Job")
@@ -72,19 +89,21 @@ class MainWindow(QMainWindow):
         idx_layout.addWidget(self.filename_input)
         input_layout.addLayout(idx_layout)
 
+        # URL Test Status Label
+        self.url_status_label = QLabel("")
+        self.url_status_label.setStyleSheet("color: #666; font-style: italic;")
+        input_layout.addWidget(self.url_status_label)
+
         # Actions
         btn_layout = QHBoxLayout()
         self.test_btn = QPushButton("Test URL")
         self.test_btn.clicked.connect(self.test_url)
         self.add_job_btn = QPushButton("Start Job")
         self.add_job_btn.clicked.connect(self.add_job)
-        self.settings_btn = QPushButton("Settings")
-        self.settings_btn.clicked.connect(self.open_settings)
         
         btn_layout.addWidget(self.test_btn)
         btn_layout.addWidget(self.add_job_btn)
         btn_layout.addStretch()
-        btn_layout.addWidget(self.settings_btn)
         input_layout.addLayout(btn_layout)
         
         input_group.setLayout(input_layout)
@@ -99,11 +118,6 @@ class MainWindow(QMainWindow):
         self.scroll_area.setWidget(self.jobs_container)
         
         main_layout.addWidget(self.scroll_area)
-        
-        # === Log/Console (Optional) ===
-        # self.log_area = QTextEdit()
-        # self.log_area.setMaximumHeight(100)
-        # main_layout.addWidget(self.log_area)
 
     def open_settings(self):
         dlg = SettingsDialog(self)
@@ -112,8 +126,10 @@ class MainWindow(QMainWindow):
             new_path = self.config_manager.get_config().download_folder
             self.segment_manager.base_download_path = new_path
 
-    def test_url(self):
-        base_url = self.url_input.text()
+    @asyncSlot()
+    async def test_url(self):
+        """Async URL testing with HEAD/GET requests to first and last indices."""
+        base_url = self.url_input.text().strip()
         try:
             start = int(self.start_input.text())
             end = int(self.end_input.text())
@@ -122,10 +138,48 @@ class MainWindow(QMainWindow):
             return
 
         padding = self.config_manager.get_config().global_padding
-        first, last = get_example_urls(base_url, start, end, padding)
+        first_url, last_url = get_example_urls(base_url, start, end, padding)
         
-        msg = f"First Segment:\n{first}\n\nLast Segment:\n{last}\n\nDoes this look correct?"
-        QMessageBox.information(self, "URL Test", msg)
+        # Update UI to show testing
+        self.url_status_label.setText("Testing connectivity...")
+        self.url_status_label.setStyleSheet("color: #0077cc; font-style: italic;")
+        self.test_btn.setEnabled(False)
+        
+        # Perform async connectivity test
+        await self.downloader.test_connectivity(first_url, last_url)
+
+    @pyqtSlot(int, int, str, str)
+    def on_connectivity_tested(self, first_status, last_status, first_error, last_error):
+        """Handle connectivity test results."""
+        self.test_btn.setEnabled(True)
+        
+        results = []
+        
+        # First URL result
+        if first_error:
+            results.append(f"First: ❌ {first_error}")
+        elif first_status == 200:
+            results.append(f"First: ✓ OK ({first_status})")
+        else:
+            results.append(f"First: ⚠ Status {first_status}")
+        
+        # Last URL result
+        if last_error:
+            results.append(f"Last: ❌ {last_error}")
+        elif last_status == 200:
+            results.append(f"Last: ✓ OK ({last_status})")
+        else:
+            results.append(f"Last: ⚠ Status {last_status}")
+        
+        status_text = " | ".join(results)
+        
+        # Color based on results
+        if first_error or last_error or first_status >= 400 or last_status >= 400:
+            self.url_status_label.setStyleSheet("color: #cc3333; font-weight: bold;")
+        else:
+            self.url_status_label.setStyleSheet("color: #33cc33; font-weight: bold;")
+        
+        self.url_status_label.setText(status_text)
 
     @asyncSlot()
     async def add_job(self):
@@ -163,14 +217,38 @@ class MainWindow(QMainWindow):
         seg_map = SegmentMap(job.total_segments)
         seg_map.set_range(start, end)
 
-        # Merge Button (initially disabled or hidden, shows on completion)
+        # Button row
+        btn_row = QHBoxLayout()
+        
+        # Cancel Button
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet("background-color: #ff6b6b; color: white;")
+        cancel_btn.clicked.connect(lambda: self.cancel_job(job_name))
+        
+        # Clear Cache Button
+        clear_cache_btn = QPushButton("Clear Cache")
+        clear_cache_btn.clicked.connect(lambda: self.clear_job_cache(job_name))
+        
+        # Retry Merge Button (initially hidden)
+        retry_merge_btn = QPushButton("Retry Merge")
+        retry_merge_btn.setStyleSheet("background-color: #ffaa00; color: white;")
+        retry_merge_btn.clicked.connect(lambda: asyncio.create_task(self.start_merge(job)))
+        retry_merge_btn.setVisible(False)
+        
+        # Merge Button (initially disabled)
         merge_btn = QPushButton("Merge")
         merge_btn.setEnabled(False)
-        merge_btn.clicked.connect(lambda: self.start_merge(job))
+        merge_btn.clicked.connect(lambda: asyncio.create_task(self.start_merge(job)))
+
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(clear_cache_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(retry_merge_btn)
+        btn_row.addWidget(merge_btn)
 
         job_layout.addWidget(pbar)
         job_layout.addWidget(seg_map)
-        job_layout.addWidget(merge_btn)
+        job_layout.addLayout(btn_row)
         
         # Add frame styling
         job_widget.setStyleSheet("border: 1px solid #ccc; margin: 5px; padding: 5px; border-radius: 5px;")
@@ -181,11 +259,62 @@ class MainWindow(QMainWindow):
             "pbar": pbar,
             "map": seg_map,
             "merge_btn": merge_btn,
+            "cancel_btn": cancel_btn,
+            "clear_cache_btn": clear_cache_btn,
+            "retry_merge_btn": retry_merge_btn,
             "widget": job_widget
         }
 
         # Start Download
         asyncio.create_task(self.downloader.start_job(job))
+
+    def cancel_job(self, job_name: str):
+        """Cancel an active job."""
+        if job_name in self.jobs:
+            self.downloader.cancel_job(job_name)
+            ui = self.jobs[job_name]
+            ui["cancel_btn"].setEnabled(False)
+            ui["pbar"].stats_label.setText("Cancelled")
+
+    def clear_job_cache(self, job_name: str):
+        """Clear cache for a specific job."""
+        if job_name in self.jobs:
+            job = self.jobs[job_name]["job"]
+            reply = QMessageBox.question(
+                self, 
+                "Clear Cache", 
+                f"Delete cached segments for '{job_name}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                try:
+                    self.segment_manager.clear_job_cache(job)
+                    QMessageBox.information(self, "Cache Cleared", f"Cache for '{job_name}' has been deleted.")
+                except PermissionError as e:
+                    QMessageBox.warning(
+                        self, 
+                        "Cannot Clear Cache", 
+                        str(e)
+                    )
+
+    def clear_history(self):
+        """Remove completed jobs from the UI (does not delete files)."""
+        jobs_to_remove = []
+        for job_name, ui in self.jobs.items():
+            job = ui["job"]
+            # Remove completed, cancelled, or failed jobs
+            if job.status in ["Completed", "Cancelled", "Failed", "Merge Error",
+                              JobStatus.COMPLETED, JobStatus.CANCELLED, JobStatus.FAILED, JobStatus.MERGE_ERROR]:
+                jobs_to_remove.append(job_name)
+        
+        for job_name in jobs_to_remove:
+            ui = self.jobs[job_name]
+            ui["widget"].setParent(None)
+            ui["widget"].deleteLater()
+            del self.jobs[job_name]
+        
+        if jobs_to_remove:
+            QMessageBox.information(self, "History Cleared", f"Removed {len(jobs_to_remove)} job(s) from the list.")
 
     @pyqtSlot(str, float, str, str)
     def on_progress_update(self, job_name, progress, speed, eta):
@@ -201,6 +330,7 @@ class MainWindow(QMainWindow):
     async def on_job_completed(self, job_name):
         if job_name in self.jobs:
             ui = self.jobs[job_name]
+            ui["cancel_btn"].setEnabled(False)
             ui["pbar"].stats_label.setText("Download Complete! Auto-merging...")
             
             # Auto-Merge
@@ -209,11 +339,22 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str, str)
     def on_job_failed(self, job_name, error):
         if job_name in self.jobs:
-             self.jobs[job_name]["pbar"].stats_label.setText(f"Failed: {error}")
+            ui = self.jobs[job_name]
+            ui["pbar"].stats_label.setText(f"Failed: {error}")
+            ui["cancel_btn"].setEnabled(False)
+            ui["merge_btn"].setEnabled(True)  # Allow manual merge attempt
+
+    @pyqtSlot(str)
+    def on_job_cancelled(self, job_name):
+        if job_name in self.jobs:
+            ui = self.jobs[job_name]
+            ui["pbar"].stats_label.setText("Cancelled")
+            ui["cancel_btn"].setEnabled(False)
 
     async def start_merge(self, job: Job):
         ui = self.jobs[job.name]
         ui["merge_btn"].setEnabled(False)
+        ui["retry_merge_btn"].setVisible(False)
         ui["pbar"].stats_label.setText("Merging...")
         
         # Get all valid files from segment manager
@@ -239,9 +380,13 @@ class MainWindow(QMainWindow):
             )
              
              if valid:
-                 ui["pbar"].stats_label.setText(f"Done! Saved to {output_path}")
-                 QMessageBox.information(self, "Success", f"Job {job.name} finished!\nFile: {output_path}")
+                 job.status = JobStatus.COMPLETED
+                 ui["pbar"].stats_label.setText(f"✓ Done! Saved to {output_path}")
              else:
-                 ui["pbar"].stats_label.setText("Merge finished but integrity check failed.")
+                 job.status = JobStatus.MERGE_ERROR
+                 ui["pbar"].stats_label.setText("⚠ Merge finished but integrity check failed.")
+                 ui["retry_merge_btn"].setVisible(True)
         else:
-            ui["pbar"].stats_label.setText("Merge Failed.")
+            job.status = JobStatus.MERGE_ERROR
+            ui["pbar"].stats_label.setText("❌ Merge Failed - Click 'Retry Merge' to try again")
+            ui["retry_merge_btn"].setVisible(True)
