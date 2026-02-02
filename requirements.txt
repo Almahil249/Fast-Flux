@@ -1,0 +1,4 @@
+aiohttp
+aiofiles
+PyQt6
+qasync
