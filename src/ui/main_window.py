@@ -51,7 +51,7 @@ class MainWindow(QMainWindow):
         url_layout = QHBoxLayout()
         url_layout.addWidget(QLabel("Base URL:"))
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("http://example.com/segment_[index].ts")
+        self.url_input.setPlaceholderText("http://example.com/segment_[i or index].ts")
         url_layout.addWidget(self.url_input)
         input_layout.addLayout(url_layout)
 
