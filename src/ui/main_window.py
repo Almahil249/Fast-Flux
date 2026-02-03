@@ -1,8 +1,10 @@
 import asyncio
+import os
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QLabel, QLineEdit, QPushButton, QGroupBox, QScrollArea,
-    QMessageBox, QTextEdit, QFrame
+    QMessageBox, QTextEdit, QFrame, QFileDialog, QDialog,
+    QFormLayout, QComboBox, QDialogButtonBox
 )
 from PyQt6.QtCore import pyqtSlot
 from qasync import asyncSlot
@@ -45,9 +47,13 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
 
-        # === Top Bar (Settings & Clear History) ===
+        # === Top Bar (Settings, Merge Folder, & Clear History) ===
         top_bar = QHBoxLayout()
         top_bar.addStretch()
+        
+        self.merge_folder_btn = QPushButton("📁 Merge Folder")
+        self.merge_folder_btn.clicked.connect(self.standalone_merge)
+        self.merge_folder_btn.setToolTip("Select a folder with downloaded segments to merge into a video")
         
         self.clear_history_btn = QPushButton("Clear History")
         self.clear_history_btn.clicked.connect(self.clear_history)
@@ -56,6 +62,7 @@ class MainWindow(QMainWindow):
         self.settings_btn = QPushButton("⚙ Settings")
         self.settings_btn.clicked.connect(self.open_settings)
         
+        top_bar.addWidget(self.merge_folder_btn)
         top_bar.addWidget(self.clear_history_btn)
         top_bar.addWidget(self.settings_btn)
         main_layout.addLayout(top_bar)
@@ -390,3 +397,153 @@ class MainWindow(QMainWindow):
             job.status = JobStatus.MERGE_ERROR
             ui["pbar"].stats_label.setText("❌ Merge Failed - Click 'Retry Merge' to try again")
             ui["retry_merge_btn"].setVisible(True)
+
+    @asyncSlot()
+    async def standalone_merge(self):
+        """Open folder dialog and merge segments from a selected folder."""
+        # Select folder containing segments
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select Folder with Downloaded Segments",
+            self.config_manager.get_config().download_folder
+        )
+        
+        if not folder_path:
+            return
+        
+        # Scan for segment files (.ts)
+        segment_files = []
+        for filename in os.listdir(folder_path):
+            if filename.endswith('.ts'):
+                segment_files.append(os.path.join(folder_path, filename))
+        
+        if not segment_files:
+            QMessageBox.warning(
+                self, 
+                "No Segments Found", 
+                "No .ts segment files found in the selected folder."
+            )
+            return
+        
+        # Sort segment files naturally (by numeric prefix if present)
+        segment_files.sort(key=lambda f: os.path.basename(f))
+        
+        # Extract folder name and remove "Cache_" prefix if present
+        folder_name = os.path.basename(folder_path)
+        if folder_name.startswith("Cache_"):
+            folder_name = folder_name[6:]  # Remove "Cache_" prefix
+        
+        # Show merge dialog for filename/extension editing
+        dialog = MergeDialog(self, folder_name)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        
+        output_filename = dialog.get_output_filename()
+        output_path = os.path.join(
+            self.config_manager.get_config().download_folder,
+            output_filename
+        )
+        
+        # Perform merge
+        QMessageBox.information(
+            self, 
+            "Merging", 
+            f"Merging {len(segment_files)} segments into {output_filename}..."
+        )
+        
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(
+            self.merger.executor,
+            self.merger.merge_segments,
+            segment_files,
+            output_path
+        )
+        
+        if success:
+            # Integrity check
+            valid = await loop.run_in_executor(
+                self.merger.executor,
+                self.merger.verify_integrity,
+                segment_files,
+                output_path
+            )
+            
+            if valid:
+                QMessageBox.information(
+                    self, 
+                    "Merge Complete", 
+                    f"✓ Successfully merged to:\n{output_path}"
+                )
+            else:
+                QMessageBox.warning(
+                    self, 
+                    "Merge Warning", 
+                    f"⚠ Merge completed but integrity check failed.\nFile: {output_path}"
+                )
+        else:
+            QMessageBox.critical(
+                self, 
+                "Merge Failed", 
+                "❌ Failed to merge segments. Check console for details."
+            )
+
+
+
+def sanitize_filename(filename: str) -> str:
+    """Remove characters that are invalid in Windows filenames."""
+    # Windows invalid characters: \ / : * ? " < > |
+    invalid_chars = r'\/:*?"<>|'
+    for char in invalid_chars:
+        filename = filename.replace(char, '_')
+    # Also remove leading/trailing spaces and dots
+    filename = filename.strip(' .')
+    return filename if filename else 'output'
+
+
+class MergeDialog(QDialog):
+    """Dialog for editing output filename and extension for standalone merge."""
+    
+    def __init__(self, parent, suggested_name: str):
+        super().__init__(parent)
+        self.setWindowTitle("Merge Settings")
+        self.setModal(True)
+        self.setMinimumWidth(400)
+        
+        layout = QVBoxLayout(self)
+        
+        # Form layout for inputs
+        form_layout = QFormLayout()
+        
+        # Filename input (sanitize the suggested name)
+        self.filename_input = QLineEdit(sanitize_filename(suggested_name))
+        form_layout.addRow("Filename:", self.filename_input)
+        
+        # Extension dropdown
+        self.extension_combo = QComboBox()
+        self.extension_combo.addItems(["mp4", "ts", "mkv", "avi", "mov"])
+        self.extension_combo.setCurrentText("mp4")  # Default to mp4
+        form_layout.addRow("Extension:", self.extension_combo)
+        
+        layout.addLayout(form_layout)
+        
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+    
+    def get_output_filename(self) -> str:
+        """Returns the full filename with extension, sanitized for safety."""
+        name = self.filename_input.text().strip()
+        ext = self.extension_combo.currentText()
+        
+        # Remove any existing extension from name
+        if '.' in name:
+            name = name.rsplit('.', 1)[0]
+        
+        # Sanitize the filename to remove invalid characters
+        name = sanitize_filename(name)
+        
+        return f"{name}.{ext}"
