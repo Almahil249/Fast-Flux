@@ -38,6 +38,7 @@ class Job:
     total_size: int = 0
     downloaded_segments: int = 0
     failed_segments: List[int] = field(default_factory=list)
+    thumbnail_path: Optional[str] = None
 
     @property
     def total_segments(self) -> int:

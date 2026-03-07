@@ -45,6 +45,16 @@ class SettingsDialog(QDialog):
         
         form.addRow("Default Padding:", self.padding_combo)
 
+        # ffmpeg Path
+        ffmpeg_layout = QHBoxLayout()
+        self.ffmpeg_input = QLineEdit(self.config.ffmpeg_path)
+        self.ffmpeg_input.textChanged.connect(self.on_ffmpeg_changed)
+        self.ffmpeg_browse_btn = QPushButton("Browse")
+        self.ffmpeg_browse_btn.clicked.connect(self.browse_ffmpeg)
+        ffmpeg_layout.addWidget(self.ffmpeg_input)
+        ffmpeg_layout.addWidget(self.ffmpeg_browse_btn)
+        form.addRow("FFmpeg Path:", ffmpeg_layout)
+
         layout.addLayout(form)
 
         # Cache Management
@@ -86,6 +96,15 @@ class SettingsDialog(QDialog):
         elif "00000 (5 digits)" in pad_text: val = "00000"
         else: val = None
         self.config_manager.set_global_padding(val)
+
+    def browse_ffmpeg(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select FFmpeg Executable", "", "Executables (*.exe);;All Files (*)")
+        if file_path:
+            self.ffmpeg_input.setText(file_path)
+
+    def on_ffmpeg_changed(self, text):
+        """Immediately save ffmpeg path changes to config."""
+        self.config_manager.set_ffmpeg_path(text)
 
     def clear_all_cache(self):
         """Clear all cache directories in the download folder."""

@@ -1,4 +1,9 @@
+<p align="center">
+  <img src="src/media/logo.png" alt="Fast-Flux Logo" width="200">
+</p>
+
 # Fast-Flux Turbo Segment Downloader
+
 
 **Fast-Flux** is a high-performance, multi-threaded Python GUI application designed to download and merge `.ts` video segments with extreme speed. It leverages asynchronous I/O (`aiohttp`) and buffered binary merging to handle hundreds of segments efficiently.
 
@@ -11,6 +16,16 @@
 *   **Persistent Config**: Remembers your download folder and settings between sessions.
 
 ---
+
+## 📦 Download & Quick Start
+
+### Portable Release (Recommended)
+For the easiest experience on Windows, download the latest portable release:
+*   **[Fast-Flux.zip](Fast-Flux.zip)**: Pre-compiled and ready to run. No Python installation required!
+    *   Simply extract the ZIP file and run `Fast-Flux.exe`.
+
+---
+
 
 ## 🛠️ Setup & Installation
 

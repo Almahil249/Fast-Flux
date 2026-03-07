@@ -49,3 +49,61 @@ class Merger:
         except Exception as e:
             print(f"Integrity check error: {e}")
             return False
+
+    def attach_thumbnail(self, video_path: str, thumb_path: str, ffmpeg_path: str = "ffmpeg") -> bool:
+        """
+        Attaches a thumbnail to the video file as cover art using ffmpeg.
+        """
+        if not os.path.exists(video_path) or not os.path.exists(thumb_path):
+            return False
+            
+        temp_output = video_path + ".tmp.mp4"
+        try:
+            # -i video: Input video
+            # -i thumb: Input image
+            # -map 0: Map all streams from first input
+            # -map 1: Map first stream from second input
+            # -c copy: Copy video/audio streams without re-encoding
+            # -c:v:1 png/jpg: (Implicit if copying)
+            # -disposition:v:1 attached_pic: Set the image as cover art
+            command = [
+                ffmpeg_path,
+                "-i", video_path,
+                "-i", thumb_path,
+                "-map", "0",
+                "-map", "1",
+                "-c", "copy",
+                "-disposition:v:1", "attached_pic",
+                "-y",
+                temp_output
+            ]
+            
+            import subprocess
+            startupinfo = None
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                startupinfo=startupinfo
+            )
+            
+            if result.returncode == 0:
+                # Replace original with new one
+                os.remove(video_path)
+                os.rename(temp_output, video_path)
+                return True
+            else:
+                print(f"ffmpeg cover art error: {result.stderr}")
+                if os.path.exists(temp_output):
+                    os.remove(temp_output)
+                return False
+        except Exception as e:
+            print(f"Attach thumbnail error: {e}")
+            if os.path.exists(temp_output):
+                os.remove(temp_output)
+            return False
+

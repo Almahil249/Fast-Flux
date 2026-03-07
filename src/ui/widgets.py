@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QProgressBar, QLabel, QHBoxLayout, QGridLayout
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QBrush, QPen
+from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtGui import QColor, QPainter, QBrush, QPen, QPixmap
 
 class SegmentMap(QWidget):
     """
@@ -75,6 +75,18 @@ class JobProgressBar(QWidget):
         self.job_name = job_name
         self.layout = QVBoxLayout(self)
         
+        # Main layout for name/stats and thumbnail
+        self.top_layout = QHBoxLayout()
+        
+        # Thumbnail area
+        self.thumbnail_label = QLabel()
+        self.thumbnail_label.setFixedSize(120, 68) # 16:9 ratio approximately
+        self.thumbnail_label.setStyleSheet("border: 1px solid #ddd; background-color: #f0f0f0; border-radius: 3px;")
+        self.thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.thumbnail_label.setText("No Preview")
+        
+        # Text info area
+        self.text_layout = QVBoxLayout()
         self.info_layout = QHBoxLayout()
         self.name_label = QLabel(f"Job: {job_name}")
         self.stats_label = QLabel("Waiting...")
@@ -85,9 +97,28 @@ class JobProgressBar(QWidget):
         self.bar = QProgressBar()
         self.bar.setRange(0, 100)
         
-        self.layout.addLayout(self.info_layout)
-        self.layout.addWidget(self.bar)
+        self.text_layout.addLayout(self.info_layout)
+        self.text_layout.addWidget(self.bar)
+        
+        self.top_layout.addWidget(self.thumbnail_label)
+        self.top_layout.addLayout(self.text_layout)
+        
+        self.layout.addLayout(self.top_layout)
 
     def update_progress(self, progress: float, speed: str, eta: str):
         self.bar.setValue(int(progress))
         self.stats_label.setText(f"Speed: {speed} | ETA: {eta}")
+
+    def update_thumbnail(self, thumb_path: str):
+        pixmap = QPixmap(thumb_path)
+        if not pixmap.isNull():
+            # Scale to fit label
+            scaled_pixmap = pixmap.scaled(
+                self.thumbnail_label.size(), 
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.thumbnail_label.setPixmap(scaled_pixmap)
+            self.thumbnail_label.setText("")
+        else:
+            self.thumbnail_label.setText("Error")

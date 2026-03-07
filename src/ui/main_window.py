@@ -6,7 +6,8 @@ from PyQt6.QtWidgets import (
     QMessageBox, QTextEdit, QFrame, QFileDialog, QDialog,
     QFormLayout, QComboBox, QDialogButtonBox
 )
-from PyQt6.QtCore import pyqtSlot
+from PyQt6.QtCore import pyqtSlot, Qt
+from PyQt6.QtGui import QIcon, QPixmap
 from qasync import asyncSlot
 
 from src.core.downloader import Downloader
@@ -39,16 +40,45 @@ class MainWindow(QMainWindow):
         self.downloader.signals.job_failed.connect(self.on_job_failed)
         self.downloader.signals.job_cancelled.connect(self.on_job_cancelled)
         self.downloader.signals.connectivity_tested.connect(self.on_connectivity_tested)
+        self.downloader.signals.thumbnail_ready.connect(self.on_thumbnail_ready)
 
+        self.set_window_icon()
         self.setup_ui()
+
+    def set_window_icon(self):
+        icon_path = os.path.join(os.path.dirname(__file__), "..", "media", "icon.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        else:
+            # Try bundled path
+            resource_dir = os.environ.get("FF_RESOURCE_DIR", "")
+            icon_path = os.path.join(resource_dir, "src", "media", "icon.ico")
+            if os.path.exists(icon_path):
+                self.setWindowIcon(QIcon(icon_path))
 
     def setup_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
 
-        # === Top Bar (Settings, Merge Folder, & Clear History) ===
+        # === Top Bar (Logo, Settings, Merge Folder, & Clear History) ===
         top_bar = QHBoxLayout()
+        
+        # Logo
+        logo_label = QLabel()
+        logo_path = os.path.join(os.path.dirname(__file__), "..", "media", "logo.png")
+        if not os.path.exists(logo_path):
+            resource_dir = os.environ.get("FF_RESOURCE_DIR", "")
+            logo_path = os.path.join(resource_dir, "src", "media", "logo.png")
+            
+        if os.path.exists(logo_path):
+            pixmap = QPixmap(logo_path)
+            logo_label.setPixmap(pixmap.scaled(150, 40, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        else:
+            logo_label.setText("<b>Fast-Flux</b>")
+            logo_label.setStyleSheet("font-size: 18px; color: #0077cc;")
+        
+        top_bar.addWidget(logo_label)
         top_bar.addStretch()
         
         self.merge_folder_btn = QPushButton("📁 Merge Folder")
@@ -242,6 +272,12 @@ class MainWindow(QMainWindow):
         retry_merge_btn.clicked.connect(lambda: asyncio.create_task(self.start_merge(job)))
         retry_merge_btn.setVisible(False)
         
+        # Retry Failed Button (initially hidden)
+        retry_failed_btn = QPushButton("Retry Failed")
+        retry_failed_btn.setStyleSheet("background-color: #4dabf7; color: white;")
+        retry_failed_btn.clicked.connect(lambda: self.retry_failed_job(job_name))
+        retry_failed_btn.setVisible(False)
+        
         # Merge Button (initially disabled)
         merge_btn = QPushButton("Merge")
         merge_btn.setEnabled(False)
@@ -250,6 +286,7 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(clear_cache_btn)
         btn_row.addStretch()
+        btn_row.addWidget(retry_failed_btn)
         btn_row.addWidget(retry_merge_btn)
         btn_row.addWidget(merge_btn)
 
@@ -269,6 +306,7 @@ class MainWindow(QMainWindow):
             "cancel_btn": cancel_btn,
             "clear_cache_btn": clear_cache_btn,
             "retry_merge_btn": retry_merge_btn,
+            "retry_failed_btn": retry_failed_btn,
             "widget": job_widget
         }
 
@@ -281,7 +319,21 @@ class MainWindow(QMainWindow):
             self.downloader.cancel_job(job_name)
             ui = self.jobs[job_name]
             ui["cancel_btn"].setEnabled(False)
+            ui["retry_failed_btn"].setVisible(False)
             ui["pbar"].stats_label.setText("Cancelled")
+
+    def retry_failed_job(self, job_name: str):
+        """Retry downloading failed segments for a job."""
+        if job_name in self.jobs:
+            ui = self.jobs[job_name]
+            job = ui["job"]
+            
+            ui["retry_failed_btn"].setVisible(False)
+            ui["cancel_btn"].setEnabled(True)
+            ui["pbar"].stats_label.setText("Retrying failed segments...")
+            
+            # Restart the job (downloader only processes non-completed segments)
+            asyncio.create_task(self.downloader.start_job(job))
 
     def clear_job_cache(self, job_name: str):
         """Clear cache for a specific job."""
@@ -333,6 +385,11 @@ class MainWindow(QMainWindow):
         if job_name in self.jobs:
             self.jobs[job_name]["map"].update_segment(index, status)
 
+    @pyqtSlot(str, str)
+    def on_thumbnail_ready(self, job_name, thumb_path):
+        if job_name in self.jobs:
+            self.jobs[job_name]["pbar"].update_thumbnail(thumb_path)
+
     @asyncSlot(str)
     async def on_job_completed(self, job_name):
         if job_name in self.jobs:
@@ -350,6 +407,7 @@ class MainWindow(QMainWindow):
             ui["pbar"].stats_label.setText(f"Failed: {error}")
             ui["cancel_btn"].setEnabled(False)
             ui["merge_btn"].setEnabled(True)  # Allow manual merge attempt
+            ui["retry_failed_btn"].setVisible(True) # Show retry button
 
     @pyqtSlot(str)
     def on_job_cancelled(self, job_name):
@@ -389,6 +447,19 @@ class MainWindow(QMainWindow):
              if valid:
                  job.status = JobStatus.COMPLETED
                  ui["pbar"].stats_label.setText(f"✓ Done! Saved to {output_path}")
+                 
+                 # Attach thumbnail to file if it exists
+                 if job.thumbnail_path:
+                     ui["pbar"].stats_label.setText("✓ Done! Attaching thumbnail...")
+                     ffmpeg_path = self.config_manager.get_config().ffmpeg_path
+                     await loop.run_in_executor(
+                         self.merger.executor,
+                         self.merger.attach_thumbnail,
+                         output_path,
+                         job.thumbnail_path,
+                         ffmpeg_path
+                     )
+                     ui["pbar"].stats_label.setText(f"✓ Done! Saved to {output_path}")
              else:
                  job.status = JobStatus.MERGE_ERROR
                  ui["pbar"].stats_label.setText("⚠ Merge finished but integrity check failed.")
@@ -469,6 +540,18 @@ class MainWindow(QMainWindow):
             )
             
             if valid:
+                # Look for thumbnail in the same folder
+                thumb_path = os.path.join(folder_path, "thumbnail.jpg")
+                if os.path.exists(thumb_path):
+                     ffmpeg_path = self.config_manager.get_config().ffmpeg_path
+                     await loop.run_in_executor(
+                         self.merger.executor,
+                         self.merger.attach_thumbnail,
+                         output_path,
+                         thumb_path,
+                         ffmpeg_path
+                     )
+                
                 QMessageBox.information(
                     self, 
                     "Merge Complete", 

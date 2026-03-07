@@ -6,6 +6,7 @@ import time
 from PyQt6.QtCore import QObject, pyqtSignal
 from src.core.types import Job, Segment, SegmentStatus
 from src.core.segment_manager import SegmentManager
+from src.core.thumbnail_generator import ThumbnailGenerator
 from src.config import ConfigManager
 
 class DownloaderSignals(QObject):
@@ -18,6 +19,8 @@ class DownloaderSignals(QObject):
     job_cancelled = pyqtSignal(str)
     # Signals: First URL status (int), Last URL status (int), First error (str), Last error (str)
     connectivity_tested = pyqtSignal(int, int, str, str)
+    # Signals: Job Name, Thumbnail Path
+    thumbnail_ready = pyqtSignal(str, str)
 
 class Downloader:
     def __init__(self, segment_manager: SegmentManager):
@@ -109,6 +112,12 @@ class Downloader:
                         segment.size = os.path.getsize(target_path)
                         job.downloaded_segments += 1
                         self.signals.segment_status_changed.emit(job.name, segment.index, "Completed")
+                        
+                        # Generate thumbnail if this is segment 5 (index 4)
+                        # More reliably: if it is the 5th segment in the list, or the last one if fewer than 5 exist
+                        thumb_index = min(4, len(job.segments) - 1)
+                        if thumb_index >= 0 and segment == job.segments[thumb_index]:
+                            await self.generate_thumbnail(job, target_path)
                     else:
                         segment.status = SegmentStatus.FAILED
                         self.signals.segment_status_changed.emit(job.name, segment.index, "Failed")
@@ -223,3 +232,25 @@ class Downloader:
     async def close(self):
         if self.session:
             await self.session.close()
+
+    async def generate_thumbnail(self, job: Job, segment_path: str):
+        """Generates a thumbnail for a job using the provided segment path."""
+        cache_dir = self.segment_manager.get_job_cache_path(job.name)
+        thumb_path = os.path.join(cache_dir, "thumbnail.jpg")
+        
+        config = ConfigManager().get_config()
+        ffmpeg_path = config.ffmpeg_path
+        
+        # Run in executor to avoid blocking async loop
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(
+            None, 
+            ThumbnailGenerator.extract_frame, 
+            segment_path, 
+            thumb_path, 
+            ffmpeg_path
+        )
+        
+        if success:
+            job.thumbnail_path = thumb_path
+            self.signals.thumbnail_ready.emit(job.name, thumb_path)
