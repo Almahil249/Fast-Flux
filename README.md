@@ -1,19 +1,9 @@
 <p align="center">
   <img src="src/media/logo.png" alt="Fast-Flux Logo" width="200">
 </p>
-
 # Fast-Flux Turbo Segment Downloader
 
-
 **Fast-Flux** is a high-performance, multi-threaded Python GUI application designed to download and merge `.ts` video segments with extreme speed. It leverages asynchronous I/O (`aiohttp`) and buffered binary merging to handle hundreds of segments efficiently.
-
-## 🚀 Features
-
-*   **Turbo-Charged Downloading**: Uses `asyncio` and `aiohttp` to download dozens of segments concurrently (default 20, customizable).
-*   **Double-Buffered Merging**: Merges segments using a high-speed binary stream approach (`shutil.copyfileobj`) running in a background thread, preventing UI freezes.
-*   **Modern GUI**: Built with `PyQt6`, featuring a real-time **Segment Map** that visualizes the status of every individual segment (Green=Done, Red=Fail, Gray=Pending).
-*   **Smart Automation**: Auto-detects padding (e.g., `001.ts`), retries failed segments, and performs integrity checks after merging.
-*   **Persistent Config**: Remembers your download folder and settings between sessions.
 
 ---
 
@@ -25,6 +15,14 @@ For the easiest experience on Windows, download the latest portable release:
     *   Simply extract the ZIP file and run `Fast-Flux.exe`.
 
 ---
+
+## 🚀 Features
+
+*   **Turbo-Charged Downloading**: Uses `asyncio` and `aiohttp` to download dozens of segments concurrently (default 20, customizable).
+*   **Double-Buffered Merging**: Merges segments using a high-speed binary stream approach (`shutil.copyfileobj`) running in a background thread, preventing UI freezes.
+*   **Modern GUI**: Built with `PyQt6`, featuring a real-time **Segment Map** that visualizes the status of every individual segment (Green=Done, Red=Fail, Gray=Pending).
+*   **Smart Automation**: Auto-detects padding (e.g., `001.ts`), retries failed segments, and performs integrity checks after merging.
+*   **Persistent Config**: Remembers your download folder and settings between sessions.
 
 
 ## 🛠️ Setup & Installation
