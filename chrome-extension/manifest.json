@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Fast-Flux Turbo Downloader",
+  "version": "2.0.0",
+  "description": "High-speed multi-threaded .ts segment downloader with streaming merge. Handles files up to 4GB.",
+  "permissions": [
+    "storage",
+    "downloads",
+    "alarms",
+    "offscreen",
+    "notifications",
+    "unlimitedStorage",
+    "background",
+    "sidePanel",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

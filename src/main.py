@@ -37,6 +37,10 @@ def main():
     
     with loop:
         loop.run_forever()
+        
+        # Cleanup aiohttp session properly before loop closes completely
+        if hasattr(window, 'downloader') and getattr(window.downloader, 'session', None):
+            loop.run_until_complete(window.downloader.close())
 
 if __name__ == "__main__":
     main()

@@ -45,6 +45,16 @@ class MainWindow(QMainWindow):
         self.set_window_icon()
         self.setup_ui()
 
+    def closeEvent(self, event):
+        if hasattr(self, 'downloader') and self.downloader:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self.downloader.close())
+            except Exception as e:
+                print(f"Error during cleanup: {e}")
+        super().closeEvent(event)
+
     def set_window_icon(self):
         icon_path = os.path.join(os.path.dirname(__file__), "..", "media", "icon.ico")
         if os.path.exists(icon_path):

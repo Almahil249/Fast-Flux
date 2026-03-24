@@ -3,6 +3,17 @@ import os
 import aiohttp
 import aiofiles
 import time
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+if not logger.handlers:
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
 from PyQt6.QtCore import QObject, pyqtSignal
 from src.core.types import Job, Segment, SegmentStatus
 from src.core.segment_manager import SegmentManager
@@ -43,7 +54,8 @@ class Downloader:
         self.semaphore = asyncio.Semaphore(config.max_concurrent_downloads)
 
         if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession()
+            connector = aiohttp.TCPConnector(ssl=False, resolver=aiohttp.ThreadedResolver())
+            self.session = aiohttp.ClientSession(connector=connector)
 
         tasks = []
         for segment in job.segments:
@@ -187,7 +199,8 @@ class Downloader:
         Emits connectivity_tested signal with results.
         """
         if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession()
+            connector = aiohttp.TCPConnector(ssl=False, resolver=aiohttp.ThreadedResolver())
+            self.session = aiohttp.ClientSession(connector=connector)
         
         async def check_url(url: str) -> tuple[int, str]:
             """Returns (status_code, error_message)"""
@@ -203,6 +216,7 @@ class Downloader:
                         return status, f"HTTP Error ({status})"
                     return status, ""
             except aiohttp.ClientResponseError as e:
+                logger.error(f"ClientResponseError for {url}: {e}", exc_info=True)
                 return e.status, f"HTTP Error ({e.status})"
             except aiohttp.ClientError as e:
                 # Try GET as fallback
@@ -217,10 +231,13 @@ class Downloader:
                             return status, f"HTTP Error ({status})"
                         return status, ""
                 except aiohttp.ClientError as get_e:
+                    logger.error(f"Detailed Connection Error during GET fallback for {url}: {get_e}", exc_info=True)
                     return 0, f"Connection Error: {str(get_e)[:50]}"
             except asyncio.TimeoutError:
+                logger.error(f"Timeout checking {url}")
                 return 0, "Timeout"
             except Exception as e:
+                logger.error(f"Unexpected error checking {url}: {e}", exc_info=True)
                 return 0, f"Error: {str(e)[:50]}"
         
         first_status, first_error = await check_url(first_url)
